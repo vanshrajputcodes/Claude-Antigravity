@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fire Draw AR — Vansh Raj Singh</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700;900&family=Rajdhani:wght@300;400;500;600;700&family=Satisfy&display=swap');
+
+  :root {
+    --glass: rgba(10, 5, 0, 0.55);
+    --border: rgba(255, 120, 0, 0.25);
+    --accent: #ff6a00;
+    --accent2: #ff00cc;
+    --font-display: 'Cinzel Decorative', serif;
+    --font-ui: 'Rajdhani', sans-serif;
+    --font-credit: 'Satisfy', cursive;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #000;
+    overflow: hidden;
+    font-family: var(--font-ui);
+    color: #fff;
+  }
+
+  /* ── Layers ── */
+  #videoEl {
+    position: fixed; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+    filter: brightness(0.45) saturate(0.8);
+    z-index: 0;
+  }
+
+  /* Drawing canvas — stays still, accumulates strokes */
+  #drawCanvas {
+    position: fixed; inset: 0;
+    width: 100%; height: 100%;
+    z-index: 2;
+    pointer-events: none;
+  }
+
+  /* Fire + skeleton canvas — redrawn every frame */
+  #fxCanvas {
+    position: fixed; inset: 0;
+    width: 100%; height: 100%;
+    transform: scaleX(-1);   /* mirror to match video */
+    z-index: 3;
+    pointer-events: none;
+  }
+
+  /* ── HUD ── */
+  #hud {
+    position: fixed;
+    top: 18px; left: 18px;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .5s;
+  }
+  #hud.show { opacity: 1; }
+
+  .panel {
+    background: var(--glass);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 16px;
+    font-family: var(--font-ui);
+    font-size: .9rem;
+    font-weight: 500;
+    letter-spacing: 2px;
+    line-height: 2;
+    min-width: 200px;
+    text-transform: uppercase;
+  }
+  .panel b { color: var(--accent); font-weight: 700; }
+
+  /* Mode badge */
+  #modeBadge {
+    position: fixed;
+    top: 18px; right: 18px;
+    z-index: 20;
+    padding: 10px 24px;
+    border-radius: 30px;
+    background: var(--glass);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--border);
+    font-family: var(--font-ui);
+    font-size: .95rem;
+    font-weight: 700;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    opacity: 0;
+    transition: opacity .5s, color .3s, border-color .3s;
+  }
+  #modeBadge.show { opacity: 1; }
+  #modeBadge.draw  { color: #ff9500; border-color: #ff9500; }
+  #modeBadge.erase { color: #00d4ff; border-color: #00d4ff; }
+  #modeBadge.idle  { color: #888; }
+
+  /* Clear button */
+  #clearBtn {
+    position: fixed;
+    bottom: 24px; right: 24px;
+    z-index: 20;
+    padding: 10px 26px;
+    border-radius: 24px;
+    border: 1px solid var(--border);
+    background: var(--glass);
+    backdrop-filter: blur(14px);
+    color: #fff;
+    font-family: var(--font-ui);
+    font-size: .9rem;
+    font-weight: 600;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity .5s, border-color .3s, box-shadow .3s;
+  }
+  #clearBtn.show { opacity: 1; }
+  #clearBtn:hover { border-color: #ff6a00; box-shadow: 0 0 14px rgba(255,106,0,.4); }
+
+  /* Credit */
+  #credit {
+    position: fixed;
+    bottom: 24px; left: 24px;
+    z-index: 20;
+    opacity: 0;
+    transition: opacity .5s;
+  }
+  #credit.show { opacity: 1; }
+  #credit a {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--glass);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 8px 16px;
+    text-decoration: none;
+    color: rgba(255,255,255,0.7);
+    font-family: var(--font-ui);
+    font-size: .78rem;
+    font-weight: 500;
+    letter-spacing: 1.5px;
+    transition: border-color .3s;
+  }
+  #credit a:hover { border-color: var(--accent); }
+  #credit .name {
+    color: var(--accent);
+    font-family: var(--font-credit);
+    font-size: .95rem;
+    font-weight: 400;
+    letter-spacing: 1px;
+  }
+
+  /* ── Overlay ── */
+  #overlay {
+    position: fixed; inset: 0;
+    z-index: 100;
+    background: rgba(0,0,0,.92);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    backdrop-filter: blur(12px);
+    transition: opacity .6s;
+  }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+
+  .logo {
+    font-family: var(--font-display);
+    font-size: 2.8rem;
+    font-weight: 900;
+    letter-spacing: 4px;
+    background: linear-gradient(90deg, #ff6a00, #ff0099, #ffdd00, #ff6a00);
+    background-size: 200%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: gradShift 3s linear infinite;
+    margin-bottom: 12px;
+    text-align: center;
+  }
+  @keyframes gradShift { to { background-position: 200% center; } }
+
+  .sub {
+    font-family: var(--font-ui);
+    color: rgba(255,255,255,.35);
+    font-size: .75rem;
+    font-weight: 300;
+    letter-spacing: 8px;
+    text-transform: uppercase;
+    margin-bottom: 50px;
+  }
+
+  .instructions {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 50px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .instr-card {
+    background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.1);
+    border-radius: 12px;
+    padding: 18px 22px;
+    text-align: center;
+    width: 160px;
+  }
+  .instr-card .icon { font-size: 2rem; margin-bottom: 10px; }
+  .instr-card .title {
+    font-family: var(--font-ui);
+    font-size: .75rem;
+    font-weight: 700;
+    letter-spacing: 3px;
+    color: var(--accent);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+  }
+  .instr-card .desc {
+    font-family: var(--font-ui);
+    font-size: .72rem;
+    font-weight: 300;
+    color: rgba(255,255,255,.5);
+    line-height: 1.7;
+    letter-spacing: .5px;
+  }
+
+  .startBtn {
+    padding: 15px 50px;
+    font-size: 1rem;
+    background: linear-gradient(135deg, #ff6a00, #ee0979);
+    border: none;
+    color: #fff;
+    border-radius: 30px;
+    cursor: pointer;
+    font-family: var(--font-ui);
+    font-weight: 700;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    box-shadow: 0 0 30px rgba(255,106,0,.5);
+    transition: transform .2s, box-shadow .2s;
+  }
+  .startBtn:hover { transform: scale(1.04); box-shadow: 0 0 50px rgba(255,106,0,.7); }
+
+  .credit-small {
+    margin-top: 28px;
+    font-family: var(--font-credit);
+    font-size: .88rem;
+    color: rgba(255,255,255,.3);
+    letter-spacing: 1px;
+  }
+  .credit-small a { color: #ff8533; text-decoration: none; }
+  .credit-small a:hover { color: #ff6a00; }
+</style>
+</head>
+<body>
+
+<!-- Start Overlay -->
+<div id="overlay">
+  <div class="logo">🔥 FIRE DRAW</div>
+  <div class="sub">AR HAND CANVAS</div>
+  <div class="instructions">
+    <div class="instr-card">
+      <div class="icon">☝️</div>
+      <div class="title">DRAW</div>
+      <div class="desc">Raise only your index finger to draw fire strokes on screen</div>
+    </div>
+    <div class="instr-card">
+      <div class="icon">🖐️</div>
+      <div class="title">ERASE</div>
+      <div class="desc">Open your full palm wide to erase everything around your hand</div>
+    </div>
+    <div class="instr-card">
+      <div class="icon">✊</div>
+      <div class="title">PAUSE</div>
+      <div class="desc">Make a fist or close fingers to stop drawing</div>
+    </div>
+    <div class="instr-card">
+      <div class="icon">🔥</div>
+      <div class="title">FIRE AURA</div>
+      <div class="desc">Both hands always glow with colorful fire particles</div>
+    </div>
+  </div>
+  <button class="startBtn" id="startBtn">IGNITE ⚡</button>
+  <div class="credit-small">by <a href="https://www.instagram.com/ig_vanshsingh/" target="_blank">Vansh Raj Singh</a></div>
+</div>
+
+<video id="videoEl" autoplay playsinline muted></video>
+<canvas id="drawCanvas"></canvas>
+<canvas id="fxCanvas"></canvas>
+
+<div id="hud">
+  <div class="panel">
+    <div>HANDS &nbsp;<b id="uHands">0</b></div>
+    <div>MODE &nbsp;&nbsp;<b id="uMode">—</b></div>
+    <div>FPS &nbsp;&nbsp;&nbsp;<b id="uFps">0</b></div>
+  </div>
+</div>
+
+<div id="modeBadge">IDLE</div>
+
+<button id="clearBtn" onclick="clearDrawing()">CLEAR CANVAS</button>
+
+<div id="credit">
+  <a href="https://www.instagram.com/ig_vanshsingh/" target="_blank" rel="noopener">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="2" y="2" width="20" height="20" rx="5"/>
+      <circle cx="12" cy="12" r="4"/>
+      <circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"/>
+    </svg>
+    <span>by <span class="name">Vansh Raj Singh</span></span>
+  </a>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+//  SETUP
+// ═══════════════════════════════════════════
+const video   = document.getElementById('videoEl');
+const drawCvs = document.getElementById('drawCanvas');
+const fxCvs   = document.getElementById('fxCanvas');
+const dCtx    = drawCvs.getContext('2d');
+const fCtx    = fxCvs.getContext('2d');
+
+let W = 0, H = 0;
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  drawCvs.width = fxCvs.width  = W;
+  drawCvs.height= fxCvs.height = H;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ═══════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════
+let hands = [];           // raw landmarks (normalized)
+let fireParticles = [];   // {x,y,vx,vy,life,size,h,s,l, canvas:'fx'|'draw'}
+let drawTrails = [];      // smooth stroke points per hand
+let frameCount = 0, lastFpsT = performance.now(), fps = 0;
+let started = false;
+
+// Per-hand draw state
+const handState = [{prev:null, drawing:false}, {prev:null, drawing:false}];
+
+// Color palettes for each hand (hue ranges)
+const HAND_PALETTES = [
+  { hMin:0,   hMax:50  },  // hand 0 → red/orange/yellow fire
+  { hMin:240, hMax:310 },  // hand 1 → blue/purple/pink fire
+];
+
+// ═══════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════
+function lm(hand, idx) {
+  // Convert normalized → screen coords (already mirrored by fxCanvas CSS)
+  const p = hand[idx];
+  return { x: p.x * W, y: p.y * H };
+}
+
+function dist(a, b) { return Math.hypot(a.x-b.x, a.y-b.y); }
+
+// ── Gesture detection ──
+function detectMode(hand) {
+  // Fingertip & PIP (knuckle) indices
+  const tips = [8, 12, 16, 20];
+  const pips = [6, 10, 14, 18];
+  const thumbTip = hand[4], thumbBase = hand[2];
+
+  // Is finger extended? tip above pip (lower y = higher on screen)
+  function extended(tipI, pipI) { return hand[tipI].y < hand[pipI].y - 0.02; }
+
+  const idxUp  = extended(8, 6);
+  const midUp  = extended(12,10);
+  const ringUp = extended(16,14);
+  const pinkyUp= extended(20,18);
+
+  const extCount = [idxUp, midUp, ringUp, pinkyUp].filter(Boolean).length;
+
+  // Open palm: all 4 fingers + thumb spread
+  const thumbOpen = hand[4].x < hand[3].x - 0.04 || hand[4].x > hand[3].x + 0.04;
+  if (extCount >= 3) return 'erase';
+
+  // Draw: only index up
+  if (idxUp && !midUp && !ringUp && !pinkyUp) return 'draw';
+
+  return 'idle';
+}
+
+// ═══════════════════════════════════════════
+//  FIRE PARTICLE SYSTEM
+// ═══════════════════════════════════════════
+function spawnFire(x, y, palette, count, canvas, spread=18, lifeMax=1.0) {
+  for (let i=0; i<count; i++) {
+    const angle = -Math.PI/2 + (Math.random()-.5)*1.2;
+    const speed = 1.2 + Math.random()*3.5;
+    const h = palette.hMin + Math.random()*(palette.hMax - palette.hMin);
+    fireParticles.push({
+      x, y,
+      vx: Math.cos(angle)*speed + (Math.random()-.5)*spread*.12,
+      vy: Math.sin(angle)*speed - Math.random()*2.5,
+      life: lifeMax * (.7 + Math.random()*.3),
+      maxLife: lifeMax,
+      size: 3 + Math.random()*7,
+      h, s:100, l: 55 + Math.random()*25,
+      canvas
+    });
+  }
+}
+
+function spawnDrawFire(x, y, palette) {
+  // For drawing strokes — smaller, more precise particles on drawCanvas
+  for (let i=0; i<6; i++) {
+    const angle = Math.random()*Math.PI*2;
+    const speed = .5 + Math.random()*2;
+    const h = palette.hMin + Math.random()*(palette.hMax - palette.hMin);
+    fireParticles.push({
+      x, y,
+      vx: Math.cos(angle)*speed,
+      vy: Math.sin(angle)*speed - 1.5,
+      life: .9 + Math.random()*.4,
+      maxLife: 1.3,
+      size: 4 + Math.random()*6,
+      h, s:100, l:60+Math.random()*20,
+      canvas:'draw',
+      isStroke: true
+    });
+  }
+}
+
+// ═══════════════════════════════════════════
+//  DRAWING (persistent canvas)
+// ═══════════════════════════════════════════
+function drawFireStroke(x1,y1,x2,y2, palette, thickness=12) {
+  // Draw a glowing gradient line on the draw canvas
+  // Then also spawn fire particles
+  const grad = dCtx.createLinearGradient(x1,y1,x2,y2);
+  const h1 = palette.hMin + Math.random()*(palette.hMax-palette.hMin);
+  const h2 = palette.hMin + Math.random()*(palette.hMax-palette.hMin);
+  grad.addColorStop(0, `hsla(${h1},100%,65%,0.85)`);
+  grad.addColorStop(1, `hsla(${h2},100%,55%,0.85)`);
+
+  // Outer glow
+  dCtx.save();
+  dCtx.shadowBlur = 28;
+  dCtx.shadowColor = `hsl(${h1},100%,60%)`;
+  dCtx.strokeStyle = grad;
+  dCtx.lineWidth = thickness;
+  dCtx.lineCap = 'round';
+  dCtx.lineJoin = 'round';
+  dCtx.beginPath();
+  dCtx.moveTo(x1,y1);
+  dCtx.lineTo(x2,y2);
+  dCtx.stroke();
+
+  // Inner bright core
+  dCtx.shadowBlur = 8;
+  dCtx.strokeStyle = `hsla(${(h1+h2)/2}, 100%, 90%, 0.6)`;
+  dCtx.lineWidth = thickness * .3;
+  dCtx.beginPath();
+  dCtx.moveTo(x1,y1);
+  dCtx.lineTo(x2,y2);
+  dCtx.stroke();
+  dCtx.restore();
+}
+
+function eraseArea(x, y, radius=90) {
+  dCtx.save();
+  dCtx.globalCompositeOperation = 'destination-out';
+  // Soft radial erase
+  const grad = dCtx.createRadialGradient(x,y,0, x,y,radius);
+  grad.addColorStop(0, 'rgba(0,0,0,1)');
+  grad.addColorStop(.7,'rgba(0,0,0,0.8)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  dCtx.fillStyle = grad;
+  dCtx.beginPath();
+  dCtx.arc(x,y,radius,0,Math.PI*2);
+  dCtx.fill();
+  dCtx.restore();
+}
+
+function clearDrawing() {
+  dCtx.clearRect(0,0,W,H);
+}
+
+// ═══════════════════════════════════════════
+//  SMOOTH CURSOR (Exponential Moving Avg)
+// ═══════════════════════════════════════════
+const smoothPos = [{x:0,y:0}, {x:0,y:0}];
+const SMOOTH_ALPHA = 0.45; // lower = smoother but laggier
+
+function smooth(idx, nx, ny) {
+  smoothPos[idx].x = smoothPos[idx].x*(1-SMOOTH_ALPHA) + nx*SMOOTH_ALPHA;
+  smoothPos[idx].y = smoothPos[idx].y*(1-SMOOTH_ALPHA) + ny*SMOOTH_ALPHA;
+  return {...smoothPos[idx]};
+}
+
+// ═══════════════════════════════════════════
+//  FX CANVAS RENDER (per frame)
+// ═══════════════════════════════════════════
+function renderFx() {
+  // Fade out fx canvas
+  fCtx.globalCompositeOperation = 'destination-out';
+  fCtx.fillStyle = 'rgba(0,0,0,0.25)';
+  fCtx.fillRect(0,0,W,H);
+  fCtx.globalCompositeOperation = 'source-over';
+
+  // Render fire particles
+  for (let i = fireParticles.length-1; i>=0; i--) {
+    const p = fireParticles[i];
+    if (p.canvas !== 'fx') continue; // hand-fire only in fxCanvas
+
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy -= 0.08; // rise
+    p.vx *= 0.97;
+    p.life -= 0.028;
+    p.l = Math.min(95, p.l + 1); // gets brighter then white
+    p.size *= 0.97;
+
+    if (p.life <= 0 || p.size < 0.5) { fireParticles.splice(i,1); continue; }
+
+    const alpha = Math.min(1, p.life / 0.4);
+    fCtx.save();
+    fCtx.globalAlpha = alpha * 0.85;
+    fCtx.shadowBlur = 14;
+    fCtx.shadowColor = `hsl(${p.h},${p.s}%,${p.l}%)`;
+    fCtx.fillStyle = `hsl(${p.h},${p.s}%,${p.l}%)`;
+    fCtx.beginPath();
+    fCtx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+    fCtx.fill();
+    fCtx.restore();
+  }
+}
+
+// ═══════════════════════════════════════════
+//  DRAW CANVAS: render persistent particles
+// ═══════════════════════════════════════════
+function renderDrawParticles() {
+  for (let i = fireParticles.length-1; i>=0; i--) {
+    const p = fireParticles[i];
+    if (p.canvas !== 'draw') continue;
+
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy -= 0.06;
+    p.life -= 0.025;
+    p.size *= 0.975;
+
+    if (p.life <= 0 || p.size < 0.4) { fireParticles.splice(i,1); continue; }
+
+    const alpha = Math.min(1, p.life / 0.5) * 0.7;
+    dCtx.save();
+    dCtx.globalAlpha = alpha;
+    dCtx.shadowBlur = 10;
+    dCtx.shadowColor = `hsl(${p.h},${p.s}%,${p.l}%)`;
+    dCtx.fillStyle   = `hsl(${p.h},${p.s}%,${p.l}%)`;
+    dCtx.beginPath();
+    dCtx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+    dCtx.fill();
+    dCtx.restore();
+  }
+}
+
+// ═══════════════════════════════════════════
+//  HAND FIRE AURA
+// ═══════════════════════════════════════════
+const HAND_LANDMARKS_FIRE = [0,1,2,3,4,5,9,13,17]; // palm + base joints
+
+function renderHandFire(hand, palIdx) {
+  const pal = HAND_PALETTES[palIdx % 2];
+
+  // Spawn fire at palm landmarks
+  HAND_LANDMARKS_FIRE.forEach(li => {
+    const p = lm(hand, li);
+    if (Math.random() > 0.4) spawnFire(p.x, p.y, pal, 1, 'fx', 12, 0.8);
+  });
+
+  // Extra fire burst at fingertips
+  [4,8,12,16,20].forEach((ti, k) => {
+    const p = lm(hand, ti);
+    if (Math.random() > 0.3) spawnFire(p.x, p.y, pal, 2, 'fx', 8, 1.0);
+  });
+
+  // Draw glowing skeleton on fx canvas
+  fCtx.save();
+  fCtx.shadowBlur = 20;
+  fCtx.shadowColor = `hsl(${(pal.hMin+pal.hMax)/2},100%,60%)`;
+  fCtx.strokeStyle = `hsla(${(pal.hMin+pal.hMax)/2},100%,70%,0.5)`;
+  fCtx.lineWidth = 2;
+
+  HAND_CONNECTIONS.forEach(([a,b]) => {
+    const pa = lm(hand,a), pb = lm(hand,b);
+    fCtx.beginPath();
+    fCtx.moveTo(pa.x, pa.y);
+    fCtx.lineTo(pb.x, pb.y);
+    fCtx.stroke();
+  });
+  fCtx.restore();
+}
+
+// ═══════════════════════════════════════════
+//  ERASE VISUAL EFFECT (blue water splash)
+// ═══════════════════════════════════════════
+function spawnEraseEffect(x, y) {
+  for (let i=0; i<12; i++) {
+    const angle = Math.random()*Math.PI*2;
+    const speed = 2+Math.random()*5;
+    fireParticles.push({
+      x, y,
+      vx: Math.cos(angle)*speed,
+      vy: Math.sin(angle)*speed,
+      life: 0.8+Math.random()*.3,
+      maxLife: 1.1,
+      size: 3+Math.random()*6,
+      h: 190+Math.random()*30, s:100, l:65,
+      canvas:'fx'
+    });
+  }
+}
+
+// ═══════════════════════════════════════════
+//  MAIN LOOP
+// ═══════════════════════════════════════════
+const uHands = document.getElementById('uHands');
+const uMode  = document.getElementById('uMode');
+const uFps   = document.getElementById('uFps');
+const modeBadge = document.getElementById('modeBadge');
+
+let globalMode = 'idle';
+
+function loop() {
+  requestAnimationFrame(loop);
+  if (!started) return;
+
+  frameCount++;
+  const now = performance.now();
+  if (now - lastFpsT > 1000) {
+    fps = frameCount;
+    frameCount = 0;
+    lastFpsT = now;
+    uFps.textContent = fps;
+  }
+
+  // Render hand fire on fx canvas
+  renderFx();
+
+  // Render stroke-fire particles on draw canvas
+  renderDrawParticles();
+
+  uHands.textContent = hands.length;
+  let modeThisFrame = 'idle';
+
+  hands.forEach((hand, hi) => {
+    // Clamp index to 0 or 1
+    const palIdx = hi % 2;
+
+    // Draw hand fire aura
+    renderHandFire(hand, palIdx);
+
+    const mode = detectMode(hand);
+    if (mode === 'draw') modeThisFrame = 'draw';
+    if (mode === 'erase' && modeThisFrame !== 'draw') modeThisFrame = 'erase';
+
+    // Index fingertip in SCREEN coords (note: fxCanvas is CSS-mirrored, drawCanvas is NOT)
+    // drawCanvas is NOT mirrored → we mirror manually: x = W - x
+    const tipNorm = hand[8]; // index tip normalized
+    const rawX = tipNorm.x * W;
+    const rawY = tipNorm.y * H;
+    const mirX = W - rawX; // mirror for drawCanvas
+    const mirY = rawY;
+
+    const sp = smooth(hi, mirX, mirY);
+
+    if (mode === 'draw') {
+      const prev = handState[hi].prev;
+      if (prev && dist(sp, prev) > 1.5) {
+        drawFireStroke(prev.x, prev.y, sp.x, sp.y, HAND_PALETTES[palIdx], 14);
+        spawnDrawFire(sp.x, sp.y, HAND_PALETTES[palIdx]);
+      }
+      handState[hi].prev = {...sp};
+
+    } else if (mode === 'erase') {
+      // Palm center for erase
+      const palmNorm = hand[0];
+      const palmX = W - palmNorm.x*W;
+      const palmY = palmNorm.y*H;
+      eraseArea(palmX, palmY, 110);
+      spawnEraseEffect(W - lm(hand,0).x*1 + lm(hand,0).x, lm(hand,0).y); // fx canvas coords
+      handState[hi].prev = null;
+
+    } else {
+      handState[hi].prev = null;
+    }
+  });
+
+  // If no hands
+  if (hands.length === 0) {
+    handState[0].prev = null;
+    handState[1].prev = null;
+    modeThisFrame = 'idle';
+  }
+
+  // Update UI
+  globalMode = modeThisFrame;
+  uMode.textContent = modeThisFrame.toUpperCase();
+  modeBadge.className = `show ${modeThisFrame}`;
+  modeBadge.textContent =
+    modeThisFrame === 'draw'  ? '✏️  DRAWING' :
+    modeThisFrame === 'erase' ? '💧 ERASING'  : '✋ IDLE';
+}
+requestAnimationFrame(loop);
+
+// ═══════════════════════════════════════════
+//  MEDIAPIPE
+// ═══════════════════════════════════════════
+function initMediaPipe() {
+  const mp = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+  mp.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.75,
+    minTrackingConfidence: 0.75
+  });
+  mp.onResults(r => {
+    hands = r.multiHandLandmarks || [];
+  });
+
+  const cam = new Camera(video, {
+    onFrame: async () => { await mp.send({ image: video }); },
+    width: 1280, height: 720, facingMode: 'user'
+  });
+  cam.start();
+}
+
+// ═══════════════════════════════════════════
+//  START
+// ═══════════════════════════════════════════
+document.getElementById('startBtn').addEventListener('click', () => {
+  document.getElementById('overlay').classList.add('hidden');
+  document.getElementById('hud').classList.add('show');
+  document.getElementById('modeBadge').classList.add('show');
+  document.getElementById('clearBtn').classList.add('show');
+  document.getElementById('credit').classList.add('show');
+  started = true;
+  initMediaPipe();
+});
+</script>
+</body>
+</html>
